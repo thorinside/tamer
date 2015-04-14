@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	_ "github.com/lib/pq"
 	"gopkg.in/gorp.v1"
@@ -296,6 +297,7 @@ type TransitService struct {
 	gorest.RestService `root:"/tamer-v2/" consumes:"application/json" produces:"application/json"`
 	agency             gorest.EndPoint `method:"GET" path:"/agency" output:"Agency"`
 	findStop           gorest.EndPoint `method:"GET" path:"/findStop/{stopCode:string}" output:"Stop"`
+	routes             gorest.EndPoint `method:"GET" path:"/routes/{stopCode:string}" output:"[]Route"`
 }
 
 func (serv TransitService) Agency() Agency {
@@ -318,4 +320,76 @@ func (serv TransitService) FindStop(stopCode string) Stop {
 		serv.ResponseBuilder().SetResponseCode(404).WriteAndOveride([]byte(err.Error()))
 	}
 	return stop
+}
+
+func (serv TransitService) currentService(time time.Time) []Calendar {
+
+	weekdays := []string{"sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"}
+
+	// Figure out the current service
+	weekDay := int(time.Weekday())
+
+	log.Println("Weekday = " + weekdays[weekDay])
+
+	date := time.Format("20060102")
+
+	log.Println("Date = " + date)
+
+	services := []Calendar{}
+
+	query := "select * from calendar where serviceid in " +
+		"(select serviceid from calendar " +
+		"where startdate <= :date " +
+		"and enddate >= :date and " + weekdays[weekDay] + " = '1' " +
+		"and serviceid not in " +
+		"(select serviceid from calendardate where date = :date and exceptiontype = '2') " +
+		") " +
+		"or serviceid in " +
+		"(select serviceid from calendardate where date = :date and exceptiontype = '1') "
+
+	log.Println(query)
+
+	_, err := dbMap.Select(&services, query,
+		map[string]interface{}{
+			"date": date,
+		})
+	checkErr(err, "Query failed")
+
+	return services
+}
+
+func (serv TransitService) serviceStringList(services []Calendar) string {
+	serviceString := ""
+	var first bool = true
+	for _, val := range services {
+		if first {
+			first = false
+		} else {
+			serviceString = serviceString + ","
+		}
+		serviceString = serviceString + "'" + val.ServiceId + "'"
+	}
+	log.Println("Returning " + serviceString)
+	return serviceString
+}
+
+func (serv TransitService) Routes(stopCode string) []Route {
+
+	services := serv.currentService(time.Now())
+
+	routes := []Route{}
+
+	_, err := dbMap.Select(&routes,
+		"select * from route where routeid in "+
+			" (select distinct routeid from trip where tripid in "+
+			" (select distinct tripid from stoptime where stopid=:stopid) and serviceid in ("+serv.serviceStringList(services)+"))"+
+			" order by routeshortname",
+		map[string]interface{}{
+			"stopid": stopCode,
+		})
+	if err != nil {
+		serv.ResponseBuilder().SetResponseCode(404).WriteAndOveride([]byte(err.Error()))
+	}
+
+	return routes
 }
