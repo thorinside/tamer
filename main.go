@@ -4,9 +4,12 @@ import (
 	"archive/zip"
 	"database/sql"
 	"encoding/csv"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -64,10 +67,10 @@ type Route struct {
 }
 
 type Shape struct {
-	ShapeId         string `json:"shape_id"`
-	ShapePtLat      string `json:"shape_pt_lat"`
-	ShapePtLon      string `json:"shape_pt_lon"`
-	ShapePtSequence string `json:"shape_pt_sequence"`
+	ShapeId         string  `json:"shape_id"`
+	ShapePtLat      float64 `json:"shape_pt_lat"`
+	ShapePtLon      float64 `json:"shape_pt_lon"`
+	ShapePtSequence int     `json:"shape_pt_sequence"`
 }
 
 type StopTime struct {
@@ -81,27 +84,30 @@ type StopTime struct {
 }
 
 type Stop struct {
-	StopId       string `json:"stop_id"`
-	StopCode     string `json:"stop_code"`
-	StopName     string `json:"stop_name"`
-	StopDesc     string `json:"stop_desc"`
-	StopLat      string `json:"stop_lat"`
-	StopLon      string `json:"stop_lon"`
-	ZoneId       string `json:"zone_id"`
-	StopUrl      string `json:"stop_url"`
-	LocationType string `json:"location_type"`
-}
-
-type Message struct {
-	Name string `json:"name"`
+	StopId       string  `json:"stop_id"`
+	StopCode     string  `json:"stop_code"`
+	StopName     string  `json:"stop_name"`
+	StopDesc     string  `json:"stop_desc"`
+	StopLat      float64 `json:"stop_lat"`
+	StopLon      float64 `json:"stop_lon"`
+	ZoneId       string  `json:"zone_id"`
+	StopUrl      string  `json:"stop_url"`
+	LocationType string  `json:"location_type"`
 }
 
 func main() {
 
-	dbMap = initDb()
+	wipePtr := flag.Bool("wipe", false, "wipe the database and reload it")
+	flag.Parse()
+
+	var wipe bool = *wipePtr
+
+	dbMap = initDb(wipe)
 	defer dbMap.Db.Close()
 
-	// load()
+	if wipe {
+		load()
+	}
 
 	gorest.RegisterService(new(TransitService))
 	gorest.RegisterMarshaller("application/json", gorest.NewJSONMarshaller())
@@ -112,7 +118,7 @@ func main() {
 	}
 }
 
-func initDb() *gorp.DbMap {
+func initDb(wipe bool) *gorp.DbMap {
 	db, err := sql.Open("postgres", "user=nealsanche dbname=tamer sslmode=disable")
 	if err != nil {
 		log.Fatal(err)
@@ -133,8 +139,12 @@ func initDb() *gorp.DbMap {
 
 	// create the table. in a production system you'd generally
 	// use a migration tool, or create the tables via scripts
+	if wipe {
+		err = dbmap.DropTablesIfExists()
+		checkErr(err, "Drop tables failed")
+	}
 	err = dbmap.CreateTablesIfNotExists()
-	checkErr(err, "Create tables failed")
+	checkErr(err, "Creating tables")
 
 	return dbmap
 }
@@ -150,6 +160,11 @@ func load() {
 	// delete any existing rows
 	err := dbMap.TruncateTables()
 	checkErr(err, "TruncateTables failed")
+
+	dbMap.Exec("drop index stoptime_stopid")
+	dbMap.Exec("drop index trip_serviceid")
+	dbMap.Exec("drop index trip_tripid")
+	dbMap.Exec("drop index trip_routeid")
 
 	r, err := zip.OpenReader("CT_GTransit_Schedule-Feb18-Jun18-2015.zip")
 	if err != nil {
@@ -249,11 +264,14 @@ func load() {
 				err := transaction.Insert(&route)
 				checkErr(err, "Inserting record")
 			case "shapes.txt":
+				lat, _ := strconv.ParseFloat(rawCSVdata[i][1], 64)
+				lon, _ := strconv.ParseFloat(rawCSVdata[i][2], 64)
+				seq, _ := strconv.Atoi(rawCSVdata[i][3])
 				shape := Shape{
 					ShapeId:         rawCSVdata[i][0],
-					ShapePtLat:      rawCSVdata[i][1],
-					ShapePtLon:      rawCSVdata[i][2],
-					ShapePtSequence: rawCSVdata[i][3],
+					ShapePtLat:      lat,
+					ShapePtLon:      lon,
+					ShapePtSequence: seq,
 				}
 				err := transaction.Insert(&shape)
 				checkErr(err, "Inserting record")
@@ -270,13 +288,15 @@ func load() {
 				err := transaction.Insert(&stopTime)
 				checkErr(err, "Inserting record")
 			case "stops.txt":
+				lat, _ := strconv.ParseFloat(rawCSVdata[i][4], 64)
+				lon, _ := strconv.ParseFloat(rawCSVdata[i][5], 64)
 				stop := Stop{
 					StopId:       rawCSVdata[i][0],
 					StopCode:     rawCSVdata[i][1],
 					StopName:     rawCSVdata[i][2],
 					StopDesc:     rawCSVdata[i][3],
-					StopLat:      rawCSVdata[i][4],
-					StopLon:      rawCSVdata[i][5],
+					StopLat:      lat,
+					StopLon:      lon,
 					ZoneId:       rawCSVdata[i][6],
 					StopUrl:      rawCSVdata[i][7],
 					LocationType: rawCSVdata[i][8],
@@ -291,6 +311,12 @@ func load() {
 
 		transaction.Commit()
 	}
+
+	dbMap.Exec("create index stoptime_stopid on stoptime (stopid)")
+	dbMap.Exec("create index trip_serviceid on trip (serviceid)")
+	dbMap.Exec("create index trip_tripid on trip (tripid)")
+	dbMap.Exec("create index trip_routeid on trip (routeid)")
+
 }
 
 type TransitService struct {
@@ -359,30 +385,31 @@ func (serv TransitService) currentService(time time.Time) []Calendar {
 }
 
 func (serv TransitService) serviceStringList(services []Calendar) string {
-	serviceString := ""
-	var first bool = true
+
+	serviceIds := []string{}
 	for _, val := range services {
-		if first {
-			first = false
-		} else {
-			serviceString = serviceString + ","
-		}
-		serviceString = serviceString + "'" + val.ServiceId + "'"
+		serviceIds = append(serviceIds, fmt.Sprintf("'%v'", val.ServiceId))
 	}
-	log.Println("Returning " + serviceString)
+
+	serviceString := strings.Join(serviceIds, ",")
 	return serviceString
+}
+
+func (serv TransitService) currentServiceList() string {
+	services := serv.currentService(time.Now())
+	return serv.serviceStringList(services)
 }
 
 func (serv TransitService) Routes(stopCode string) []Route {
 
-	services := serv.currentService(time.Now())
+	services := serv.currentServiceList()
 
 	routes := []Route{}
 
 	_, err := dbMap.Select(&routes,
 		"select * from route where routeid in "+
 			" (select distinct routeid from trip where tripid in "+
-			" (select distinct tripid from stoptime where stopid=:stopid) and serviceid in ("+serv.serviceStringList(services)+"))"+
+			" (select distinct tripid from stoptime where stopid = :stopid) and serviceid in ("+services+"))"+
 			" order by routeshortname",
 		map[string]interface{}{
 			"stopid": stopCode,
