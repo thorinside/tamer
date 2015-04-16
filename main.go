@@ -166,7 +166,7 @@ func load() {
 	dbMap.Exec("drop index trip_tripid")
 	dbMap.Exec("drop index trip_routeid")
 
-	r, err := zip.OpenReader("CT_GTransit_Schedule-Feb18-Jun18-2015.zip")
+	r, err := zip.OpenReader("schedules.zip")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -264,8 +264,8 @@ func load() {
 				err := transaction.Insert(&route)
 				checkErr(err, "Inserting record")
 			case "shapes.txt":
-				lat, _ := strconv.ParseFloat(rawCSVdata[i][1], 64)
-				lon, _ := strconv.ParseFloat(rawCSVdata[i][2], 64)
+				lat, _ := strconv.ParseFloat(strings.TrimSpace(rawCSVdata[i][1]), 64)
+				lon, _ := strconv.ParseFloat(strings.TrimSpace(rawCSVdata[i][2]), 64)
 				seq, _ := strconv.Atoi(rawCSVdata[i][3])
 				shape := Shape{
 					ShapeId:         rawCSVdata[i][0],
@@ -288,8 +288,8 @@ func load() {
 				err := transaction.Insert(&stopTime)
 				checkErr(err, "Inserting record")
 			case "stops.txt":
-				lat, _ := strconv.ParseFloat(rawCSVdata[i][4], 64)
-				lon, _ := strconv.ParseFloat(rawCSVdata[i][5], 64)
+				lat, _ := strconv.ParseFloat(strings.TrimSpace(rawCSVdata[i][4]), 64)
+				lon, _ := strconv.ParseFloat(strings.TrimSpace(rawCSVdata[i][5]), 64)
 				stop := Stop{
 					StopId:       rawCSVdata[i][0],
 					StopCode:     rawCSVdata[i][1],
