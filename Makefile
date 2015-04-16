@@ -12,6 +12,7 @@ init:
 	go get gopkg.in/gorp.v1
 	go get github.com/lib/pq
 	go get github.com/paulmach/go.geo
+	go get github.com/paulmach/go.geo/reducers
 
 format:
 	@echo "$(OK_COLOR)==> Formatting$(NO_COLOR)"

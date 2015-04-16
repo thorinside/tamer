@@ -7,12 +7,15 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
+	"github.com/paulmach/go.geo"
+	"github.com/paulmach/go.geo/reducers"
 	"gopkg.in/gorp.v1"
 
 	"code.google.com/p/gorest"
@@ -71,6 +74,11 @@ type Shape struct {
 	ShapePtLat      float64 `json:"shape_pt_lat"`
 	ShapePtLon      float64 `json:"shape_pt_lon"`
 	ShapePtSequence int     `json:"shape_pt_sequence"`
+}
+
+type ShapePath struct {
+	ShapeId string `json:"shape_id"`
+	Path    string `json:"path"`
 }
 
 type StopTime struct {
@@ -162,6 +170,7 @@ func load() {
 	checkErr(err, "TruncateTables failed")
 
 	dbMap.Exec("drop index stoptime_stopid")
+	dbMap.Exec("drop index stoptime_tripid")
 	dbMap.Exec("drop index trip_serviceid")
 	dbMap.Exec("drop index trip_tripid")
 	dbMap.Exec("drop index trip_routeid")
@@ -175,7 +184,7 @@ func load() {
 	// Iterate through the files in the archive,
 	// printing some of their contents.
 	for _, f := range r.File {
-		log.Printf("Contents of %s:\n", f.Name)
+		log.Printf("Processing %s...", f.Name)
 		rc, err := f.Open()
 		if err != nil {
 			log.Fatal(err)
@@ -190,8 +199,6 @@ func load() {
 		if err != nil {
 			log.Fatal(err)
 		}
-
-		log.Println(len(rawCSVdata))
 
 		records := 0
 
@@ -312,7 +319,10 @@ func load() {
 		transaction.Commit()
 	}
 
+	log.Println("Generating Indexes")
+
 	dbMap.Exec("create index stoptime_stopid on stoptime (stopid)")
+	dbMap.Exec("create index stoptime_tripid on stoptime (tripid)")
 	dbMap.Exec("create index trip_serviceid on trip (serviceid)")
 	dbMap.Exec("create index trip_tripid on trip (tripid)")
 	dbMap.Exec("create index trip_routeid on trip (routeid)")
@@ -320,10 +330,20 @@ func load() {
 }
 
 type TransitService struct {
-	gorest.RestService `root:"/tamer-v2/" consumes:"application/json" produces:"application/json"`
-	agency             gorest.EndPoint `method:"GET" path:"/agency" output:"Agency"`
-	findStop           gorest.EndPoint `method:"GET" path:"/findStop/{stopCode:string}" output:"Stop"`
-	routes             gorest.EndPoint `method:"GET" path:"/routes/{stopCode:string}" output:"[]Route"`
+	gorest.RestService  `root:"/tamer-v2/" consumes:"application/json" produces:"application/json"`
+	agency              gorest.EndPoint `method:"GET" path:"/agency" output:"Agency"`
+	findStop            gorest.EndPoint `method:"GET" path:"/findStop/{stopCode:string}" output:"Stop"`
+	routes              gorest.EndPoint `method:"GET" path:"/routes/{stopCode:string}" output:"[]Route"`
+	calendar            gorest.EndPoint `method:"GET" path:"/calendar" output:"[]Calendar"`
+	calendars           gorest.EndPoint `method:"GET" path:"/calendars/{year:string}/{month:string}/{day:string}" output:"[]Calendar"`
+	exceptions          gorest.EndPoint `method:"GET" path:"/exceptions/{date:string}" output:"[]CalendarDate"`
+	service             gorest.EndPoint `method:"GET" path:"/service" output:"[]string"`
+	allCalendars        gorest.EndPoint `method:"GET" path:"/calendars" output:"[]Calendar"`
+	findRoute           gorest.EndPoint `method:"GET" path:"/findroute/{shortName:string}" output:"[]Route"`
+	stopsForRoute       gorest.EndPoint `method:"GET" path:"/stops/{routeId:string}" output:"[]Stop"`
+	stopsInRange        gorest.EndPoint `method:"GET" path:"/stops/{lon:string}/{lat:string}/{distance:string}" output:"[]Stop"`
+	nearestStopForRoute gorest.EndPoint `method:"GET" path:"/stop/{routeId:string}/{lon:string}/{lat:string}" output:"Stop"`
+	shape               gorest.EndPoint `method:"GET" path:"/shape/{routed:string}" output:"[]ShapePath"`
 }
 
 func (serv TransitService) Agency() Agency {
@@ -337,6 +357,137 @@ func (serv TransitService) Agency() Agency {
 	return agency
 }
 
+func (serv TransitService) Shape(routeId string) []ShapePath {
+	all := []ShapePath{}
+
+	services := serv.currentServiceList()
+
+	query := "select * from shape where shapeid in " +
+		"(select shapeid from trip where routeid = :route and serviceid in (" + services + ")) " +
+		"order by shapeid"
+
+	shapes := []Shape{}
+
+	_, err := dbMap.Select(&shapes, query, map[string]interface{}{
+		"route": routeId,
+	})
+	if err != nil {
+		serv.ResponseBuilder().SetResponseCode(404).WriteAndOveride([]byte(err.Error()))
+	}
+
+	var currentShape string
+	points := [][2]float64{}
+
+	for _, shape := range shapes {
+		if currentShape != shape.ShapeId {
+
+			if len(points) > 0 {
+				path := geo.NewPathFromXYData(points)
+
+				reducedPath := reducers.DouglasPeucker(path, 1.0e-5)
+				encodedString := reducedPath.Encode()
+				all = append(all, ShapePath{
+					ShapeId: currentShape,
+					Path:    encodedString,
+				})
+			}
+
+			points = [][2]float64{}
+			currentShape = shape.ShapeId
+		}
+
+		points = append(points, [2]float64{shape.ShapePtLat, shape.ShapePtLon})
+
+	}
+
+	// Make sure we're not missing the last shape
+	if len(points) > 0 {
+		path := geo.NewPathFromXYData(points)
+
+		reducedPath := reducers.DouglasPeucker(path, 1.0e-5)
+		encodedString := reducedPath.Encode()
+		all = append(all, ShapePath{
+			ShapeId: currentShape,
+			Path:    encodedString,
+		})
+	}
+
+	return all
+}
+
+func (serv TransitService) NearestStopForRoute(routeId string, lon string, lat string) Stop {
+
+	longitude, _ := strconv.ParseFloat(strings.TrimSpace(lon), 64)
+	latitude, _ := strconv.ParseFloat(strings.TrimSpace(lat), 64)
+	latLongPoint := geo.NewPoint(latitude, longitude)
+
+	stopsForRoute := serv.StopsForRoute(routeId)
+
+	var nearest Stop
+	distance := math.MaxFloat64
+	for _, stop := range stopsForRoute {
+		stopLatLong := geo.NewPoint(stop.StopLat, stop.StopLon)
+		currentDistance := stopLatLong.GeoDistanceFrom(latLongPoint, true)
+		if currentDistance < distance {
+			nearest = stop
+			distance = currentDistance
+		}
+	}
+
+	return nearest
+}
+
+func (serv TransitService) StopsInRange(lon string, lat string, distance string) []Stop {
+
+	longitude, _ := strconv.ParseFloat(strings.TrimSpace(lon), 64)
+	latitude, _ := strconv.ParseFloat(strings.TrimSpace(lat), 64)
+
+	rangeToTarget, _ := strconv.ParseFloat(strings.TrimSpace(distance), 64)
+
+	latLongPoint := geo.NewPoint(latitude, longitude)
+
+	all := []Stop{}
+
+	_, err := dbMap.Select(&all, "select * from stop")
+	if err != nil {
+		serv.ResponseBuilder().SetResponseCode(404).WriteAndOveride([]byte(err.Error()))
+	}
+
+	some := []Stop{}
+
+	for _, stop := range all {
+		stopLatLong := geo.NewPoint(stop.StopLat, stop.StopLon)
+
+		if stopLatLong.GeoDistanceFrom(latLongPoint, true) < rangeToTarget {
+			some = append(some, stop)
+		}
+	}
+
+	return some
+}
+
+func (serv TransitService) StopsForRoute(routeId string) []Stop {
+
+	services := serv.currentServiceList()
+
+	query := "select * from stop where stopid in " +
+		"(select distinct stopid from stoptime where tripid in " +
+		"(select distinct tripid from trip where routeid = :route and serviceid in (" + services + ")" +
+		"))"
+
+	all := []Stop{}
+
+	_, err := dbMap.Select(&all, query, map[string]interface{}{
+		"route": routeId,
+	})
+
+	if err != nil {
+		serv.ResponseBuilder().SetResponseCode(404).WriteAndOveride([]byte(err.Error()))
+	}
+
+	return all
+}
+
 func (serv TransitService) FindStop(stopCode string) Stop {
 	var stop Stop
 	err := dbMap.SelectOne(&stop, "select * from stop where stopcode = :code", map[string]interface{}{
@@ -346,6 +497,69 @@ func (serv TransitService) FindStop(stopCode string) Stop {
 		serv.ResponseBuilder().SetResponseCode(404).WriteAndOveride([]byte(err.Error()))
 	}
 	return stop
+}
+
+func (serv TransitService) Exceptions(date string) []CalendarDate {
+	exceptions := []CalendarDate{}
+
+	_, err := dbMap.Select(&exceptions, "select * from calendardate where date = :date", map[string]interface{}{
+		"date": date,
+	})
+
+	if err != nil {
+		serv.ResponseBuilder().SetResponseCode(404).WriteAndOveride([]byte(err.Error()))
+	}
+
+	return exceptions
+}
+
+func (serv TransitService) FindRoute(shortName string) []Route {
+	all := []Route{}
+
+	_, err := dbMap.Select(&all, "select * from route where routeshortname like :name", map[string]interface{}{
+		"name": shortName,
+	})
+
+	if err != nil {
+		serv.ResponseBuilder().SetResponseCode(404).WriteAndOveride([]byte(err.Error()))
+	}
+
+	return all
+}
+
+func (serv TransitService) AllCalendars() []Calendar {
+	all := []Calendar{}
+
+	_, err := dbMap.Select(&all, "select * from calendar")
+
+	if err != nil {
+		serv.ResponseBuilder().SetResponseCode(404).WriteAndOveride([]byte(err.Error()))
+	}
+
+	return all
+}
+
+func (serv TransitService) Calendars(year string, month string, day string) []Calendar {
+	date, err := time.Parse("20060102", fmt.Sprintf("%v%v%v", year, month, day))
+	if err != nil {
+		serv.ResponseBuilder().SetResponseCode(404).WriteAndOveride([]byte(err.Error()))
+	}
+
+	return serv.currentService(date)
+}
+
+func (serv TransitService) Calendar() []Calendar {
+	return serv.currentService(time.Now())
+}
+
+func (serv TransitService) Service() []string {
+	serviceNames := []string{}
+
+	for _, calendar := range serv.currentService(time.Now()) {
+		serviceNames = append(serviceNames, calendar.ServiceId)
+	}
+
+	return serviceNames
 }
 
 func (serv TransitService) currentService(time time.Time) []Calendar {
