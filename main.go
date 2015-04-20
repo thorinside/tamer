@@ -344,6 +344,8 @@ type TransitService struct {
 	stopsInRange        gorest.EndPoint `method:"GET" path:"/stops/{lon:string}/{lat:string}/{distance:string}" output:"[]Stop"`
 	nearestStopForRoute gorest.EndPoint `method:"GET" path:"/stop/{routeId:string}/{lon:string}/{lat:string}" output:"Stop"`
 	shape               gorest.EndPoint `method:"GET" path:"/shape/{routed:string}" output:"[]ShapePath"`
+	stopSchedule        gorest.EndPoint `method:"GET" path:"/schedule/{stopId:string}/{routeId:string}" output:"[]StopTime"`
+	tripSchedule        gorest.EndPoint `method:"GET" path:"/schedule/{tripId:string}" output:"[]StopTime"`
 }
 
 func (serv TransitService) Agency() Agency {
@@ -355,6 +357,44 @@ func (serv TransitService) Agency() Agency {
 	}
 
 	return agency
+}
+
+func (serv TransitService) TripSchedule(tripId string) []StopTime {
+	all := []StopTime{}
+
+	query := "select * from stoptime where tripid = :tripId " +
+		" order by arrivaltime"
+
+	_, err := dbMap.Select(&all, query, map[string]interface{}{
+		"tripId": tripId,
+	})
+
+	if err != nil {
+		serv.ResponseBuilder().SetResponseCode(404).WriteAndOveride([]byte(err.Error()))
+	}
+
+	return all
+}
+
+func (serv TransitService) StopSchedule(stopId string, routeId string) []StopTime {
+	all := []StopTime{}
+
+	services := serv.currentServiceList()
+
+	query := "select * from stoptime where tripid in " +
+		"(select tripid from trip where serviceid in (" + services + ") and routeid = :routeId ) " +
+		"and stopid = :stopId order by arrivaltime"
+
+	_, err := dbMap.Select(&all, query, map[string]interface{}{
+		"routeId": routeId,
+		"stopId":  stopId,
+	})
+
+	if err != nil {
+		serv.ResponseBuilder().SetResponseCode(404).WriteAndOveride([]byte(err.Error()))
+	}
+
+	return all
 }
 
 func (serv TransitService) Shape(routeId string) []ShapePath {
