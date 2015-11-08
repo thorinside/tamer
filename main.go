@@ -6,9 +6,12 @@ import (
 	"encoding/csv"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
+	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -163,7 +166,36 @@ func checkErr(err error, msg string) {
 	}
 }
 
+func downloadDataset(url string, output string) {
+	log.Println("Downloading", url, "to", output)
+
+	outfile, err := os.Create(output)
+	if err != nil {
+		log.Println("Error creating", output, "-", err)
+		return
+	}
+	defer outfile.Close()
+
+	response, err := http.Get(url)
+	if err != nil {
+		log.Println("Error while downloading", url, "-", err)
+		return
+	}
+	defer response.Body.Close()
+
+	n, err := io.Copy(outfile, response.Body)
+	if err != nil {
+		log.Println("error wile downloading", url, "-", err)
+		return
+	}
+
+	log.Println(n, "bytes downloaded.")
+}
+
 func load() {
+
+	// Download the most recent dataset
+	downloadDataset("https://data.calgary.ca/_layouts/OpenData/DownloadDataset.ashx?Format=FILE&DatasetId=PDC0-99999-99999-00501-P(CITYonlineDefault)&VariantId=5(CITYonlineDefault)", "/tmp/schedules.zip")
 
 	// delete any existing rows
 	err := dbMap.TruncateTables()
@@ -175,7 +207,7 @@ func load() {
 	dbMap.Exec("drop index trip_tripid")
 	dbMap.Exec("drop index trip_routeid")
 
-	r, err := zip.OpenReader("schedules.zip")
+	r, err := zip.OpenReader("/tmp/schedules.zip")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -189,6 +221,8 @@ func load() {
 		if err != nil {
 			log.Fatal(err)
 		}
+
+		fileName := path.Base(f.Name)
 
 		transaction, dbMapErr := dbMap.Begin()
 		checkErr(dbMapErr, "Starting Transaction")
@@ -206,14 +240,14 @@ func load() {
 
 			records++
 
-			if records > 100000 {
+			if records > 15000 {
 				checkErr(transaction.Commit(), "Commiting Transaction")
 				transaction, dbMapErr = dbMap.Begin()
 				checkErr(dbMapErr, "Starting Transaction")
 				records = 0
 			}
 
-			switch f.Name {
+			switch fileName {
 			case "trips.txt":
 				trip := Trip{
 					RouteId:      rawCSVdata[i][0],
@@ -327,6 +361,8 @@ func load() {
 	dbMap.Exec("create index trip_tripid on trip (tripid)")
 	dbMap.Exec("create index trip_routeid on trip (routeid)")
 
+	err = os.Remove("/tmp/schedules.zip")
+	checkErr(err, "deleting /tmp/schedules.zip")
 }
 
 type TransitService struct {
@@ -346,6 +382,11 @@ type TransitService struct {
 	shape               gorest.EndPoint `method:"GET" path:"/shape/{routed:string}" output:"[]ShapePath"`
 	stopSchedule        gorest.EndPoint `method:"GET" path:"/schedule/{stopId:string}/{routeId:string}" output:"[]StopTime"`
 	tripSchedule        gorest.EndPoint `method:"GET" path:"/schedule/{tripId:string}" output:"[]StopTime"`
+	reload              gorest.EndPoint `method:"POST" path:"/admin/data/reload" postdata:"string"`
+}
+
+func (serv TransitService) Reload(code string) {
+	go load()
 }
 
 func (serv TransitService) Agency() Agency {
