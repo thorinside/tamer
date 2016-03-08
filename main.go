@@ -195,7 +195,7 @@ func downloadDataset(url string, output string) {
 func load() {
 
 	// Download the most recent dataset
-	downloadDataset("https://data.calgary.ca/_layouts/OpenData/DownloadDataset.ashx?Format=FILE&DatasetId=PDC0-99999-99999-00501-P(CITYonlineDefault)&VariantId=5(CITYonlineDefault)", "/tmp/schedules.zip")
+	downloadDataset("https://data.calgary.ca/_layouts/OpenData/DownloadDataset.ashx?Format=FILE&DatasetId=PDC0-99999-99999-00501-P(CITYonlineDefault)&VariantId=6(CITYonlineDefault)", "/tmp/schedules.zip")
 
 	// delete any existing rows
 	err := dbMap.TruncateTables()
