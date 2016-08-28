@@ -21,7 +21,7 @@ import (
 	"github.com/paulmach/go.geo/reducers"
 	"gopkg.in/gorp.v1"
 
-	"code.google.com/p/gorest"
+	"github.com/fromkeith/gorest"
 )
 
 var dbMap *gorp.DbMap
@@ -117,7 +117,7 @@ func main() {
 	defer dbMap.Db.Close()
 
 	if wipe {
-		load()
+		load("8")
 	}
 
 	gorest.RegisterService(new(TransitService))
@@ -130,7 +130,12 @@ func main() {
 }
 
 func initDb(wipe bool) *gorp.DbMap {
-	db, err := sql.Open("postgres", "user=nealsanche dbname=tamer sslmode=disable")
+
+
+	hostname := os.Getenv("POSTGRES_PORT_5432_TCP_ADDR")
+	connectionString := fmt.Sprintf("host=%s user=nealsanche dbname=tamer sslmode=disable", hostname)
+
+	db, err := sql.Open("postgres", connectionString)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -192,11 +197,10 @@ func downloadDataset(url string, output string) {
 	log.Println(n, "bytes downloaded.")
 }
 
-func load() {
-
+func load(artifactId string) {
 	// Download the most recent dataset
-	downloadDataset("https://data.calgary.ca/_layouts/OpenData/DownloadDataset.ashx?Format=FILE&DatasetId=PDC0-99999-99999-00501-P(CITYonlineDefault)&VariantId=6(CITYonlineDefault)", "/tmp/schedules.zip")
-
+	url := fmt.Sprintf("https://data.calgary.ca/_layouts/OpenData/DownloadDataset.ashx?Format=FILE&DatasetId=PDC0-99999-99999-00501-P(CITYonlineDefault)&VariantId=%s(CITYonlineDefault)", artifactId)
+	downloadDataset(url, "/tmp/schedules.zip")
 	// delete any existing rows
 	err := dbMap.TruncateTables()
 	checkErr(err, "TruncateTables failed")
@@ -209,7 +213,8 @@ func load() {
 
 	r, err := zip.OpenReader("/tmp/schedules.zip")
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Zip opening failed. Abort load.")
+		return
 	}
 	defer r.Close()
 
@@ -363,6 +368,8 @@ func load() {
 
 	err = os.Remove("/tmp/schedules.zip")
 	checkErr(err, "deleting /tmp/schedules.zip")
+
+	log.Println("Finished.")
 }
 
 type TransitService struct {
@@ -382,11 +389,12 @@ type TransitService struct {
 	shape               gorest.EndPoint `method:"GET" path:"/shape/{routed:string}" output:"[]ShapePath"`
 	stopSchedule        gorest.EndPoint `method:"GET" path:"/schedule/{stopId:string}/{routeId:string}" output:"[]StopTime"`
 	tripSchedule        gorest.EndPoint `method:"GET" path:"/schedule/{tripId:string}" output:"[]StopTime"`
-	reload              gorest.EndPoint `method:"POST" path:"/admin/data/reload" postdata:"string"`
+	reload              gorest.EndPoint `method:"POST" path:"/admin/data/reload/{artifactId:string}" postdata:"string"`
 }
 
-func (serv TransitService) Reload(code string) {
-	go load()
+func (serv TransitService) Reload(artifactId string, code string) {
+	log.Println(artifactId)
+	go load(artifactId)
 }
 
 func (serv TransitService) Agency() Agency {
