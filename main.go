@@ -16,12 +16,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fromkeith/gorest"
 	_ "github.com/lib/pq"
 	"github.com/paulmach/go.geo"
 	"github.com/paulmach/go.geo/reducers"
 	"gopkg.in/gorp.v1"
-
-	"github.com/fromkeith/gorest"
 )
 
 var dbMap *gorp.DbMap
@@ -130,7 +129,6 @@ func main() {
 }
 
 func initDb(wipe bool) *gorp.DbMap {
-
 
 	hostname := os.Getenv("POSTGRES_PORT_5432_TCP_ADDR")
 	connectionString := fmt.Sprintf("host=%s user=nealsanche dbname=tamer sslmode=disable", hostname)
@@ -386,9 +384,11 @@ type TransitService struct {
 	stopsForRoute       gorest.EndPoint `method:"GET" path:"/stops/{routeId:string}" output:"[]Stop"`
 	stopsInRange        gorest.EndPoint `method:"GET" path:"/stops/{lon:string}/{lat:string}/{distance:string}" output:"[]Stop"`
 	nearestStopForRoute gorest.EndPoint `method:"GET" path:"/stop/{routeId:string}/{lon:string}/{lat:string}" output:"Stop"`
-	shape               gorest.EndPoint `method:"GET" path:"/shape/{routed:string}" output:"[]ShapePath"`
+	shape               gorest.EndPoint `method:"GET" path:"/shape/{routeId:string}" output:"[]ShapePath"`
 	stopSchedule        gorest.EndPoint `method:"GET" path:"/schedule/{stopId:string}/{routeId:string}" output:"[]StopTime"`
 	tripSchedule        gorest.EndPoint `method:"GET" path:"/schedule/{tripId:string}" output:"[]StopTime"`
+	trip                gorest.EndPoint `method:"GET" path:"/trip/{tripId:string}" output:"[]Trip"`
+	trips               gorest.EndPoint `method:"GET" path:"/trips/{routeId:string}" output:"[]Trip"`
 	reload              gorest.EndPoint `method:"POST" path:"/admin/data/reload/{artifactId:string}" postdata:"string"`
 }
 
@@ -416,6 +416,41 @@ func (serv TransitService) TripSchedule(tripId string) []StopTime {
 
 	_, err := dbMap.Select(&all, query, map[string]interface{}{
 		"tripId": tripId,
+	})
+
+	if err != nil {
+		serv.ResponseBuilder().SetResponseCode(404).WriteAndOveride([]byte(err.Error()))
+	}
+
+	return all
+}
+
+func (serv TransitService) Trip(tripId string) []Trip {
+	all := []Trip{}
+
+	query := "select * from trip where tripid = :tripId " +
+		" order by tripid"
+
+	_, err := dbMap.Select(&all, query, map[string]interface{}{
+		"tripId": tripId,
+	})
+
+	if err != nil {
+		serv.ResponseBuilder().SetResponseCode(404).WriteAndOveride([]byte(err.Error()))
+	}
+
+	return all
+}
+
+func (serv TransitService) Trips(routeId string) []Trip {
+	all := []Trip{}
+
+	services := serv.currentServiceList()
+
+	query := "select * from trip where serviceid in (" + services + ") and routeid = :routeId"
+
+	_, err := dbMap.Select(&all, query, map[string]interface{}{
+		"routeId": routeId,
 	})
 
 	if err != nil {

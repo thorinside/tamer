@@ -7,12 +7,12 @@ DEPS = $(go list -f '{{range .TestImports}}{{.}} {{end}}' ./...)
 init:
 	@echo "$(OK_COLOR)==> This project uses Godep, downloading...$(NO_COLOR)"
 	go get github.com/tools/godep
-	go get code.google.com/p/gorest
 	go get github.com/etgryphon/stringUp
 	go get gopkg.in/gorp.v1
 	go get github.com/lib/pq
 	go get github.com/paulmach/go.geo
 	go get github.com/paulmach/go.geo/reducers
+	go get github.com/fromkeith/gorest
 
 format:
 	@echo "$(OK_COLOR)==> Formatting$(NO_COLOR)"
