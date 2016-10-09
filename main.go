@@ -520,7 +520,7 @@ func (serv TransitService) Shape(routeId string) []ShapePath {
 			currentShape = shape.ShapeId
 		}
 
-		points = append(points, [2]float64{shape.ShapePtLat, shape.ShapePtLon})
+		points = append(points, [2]float64{shape.ShapePtLon, shape.ShapePtLat})
 
 	}
 
