@@ -381,10 +381,10 @@ type TransitService struct {
 	service             gorest.EndPoint `method:"GET" path:"/service" output:"[]string"`
 	allCalendars        gorest.EndPoint `method:"GET" path:"/calendars" output:"[]Calendar"`
 	findRoute           gorest.EndPoint `method:"GET" path:"/findroute/{shortName:string}" output:"[]Route"`
-	stopsForRoute       gorest.EndPoint `method:"GET" path:"/stops/{routeId:string}" output:"[]Stop"`
+	stopsForRoute       gorest.EndPoint `method:"GET" path:"/stops/{routeId:string}/{directionId:string}" output:"[]Stop"`
 	stopsInRange        gorest.EndPoint `method:"GET" path:"/stops/{lon:string}/{lat:string}/{distance:string}" output:"[]Stop"`
-	nearestStopForRoute gorest.EndPoint `method:"GET" path:"/stop/{routeId:string}/{lon:string}/{lat:string}" output:"Stop"`
-	shape               gorest.EndPoint `method:"GET" path:"/shape/{routeId:string}" output:"[]ShapePath"`
+	nearestStopForRoute gorest.EndPoint `method:"GET" path:"/stop/{routeId:string}/{directionId:string}/{lon:string}/{lat:string}" output:"Stop"`
+	shape               gorest.EndPoint `method:"GET" path:"/shape/{routeId:string}/{directionId:string}" output:"[]ShapePath"`
 	stopSchedule        gorest.EndPoint `method:"GET" path:"/schedule/{stopId:string}/{routeId:string}" output:"[]StopTime"`
 	tripSchedule        gorest.EndPoint `method:"GET" path:"/schedule/{tripId:string}" output:"[]StopTime"`
 	trip                gorest.EndPoint `method:"GET" path:"/trip/{tripId:string}" output:"[]Trip"`
@@ -481,19 +481,20 @@ func (serv TransitService) StopSchedule(stopId string, routeId string) []StopTim
 	return all
 }
 
-func (serv TransitService) Shape(routeId string) []ShapePath {
+func (serv TransitService) Shape(routeId string, directionId string) []ShapePath {
 	all := []ShapePath{}
 
 	services := serv.currentServiceList()
 
 	query := "select * from shape where shapeid in " +
-		"(select shapeid from trip where routeid = :route and serviceid in (" + services + ")) " +
+		"(select shapeid from trip where routeid = :route and directionid = :direction and serviceid in (" + services + ")) " +
 		"order by shapeid"
 
 	shapes := []Shape{}
 
 	_, err := dbMap.Select(&shapes, query, map[string]interface{}{
-		"route": routeId,
+		"route":     routeId,
+		"direction": directionId,
 	})
 	if err != nil {
 		serv.ResponseBuilder().SetResponseCode(404).WriteAndOveride([]byte(err.Error()))
@@ -539,13 +540,13 @@ func (serv TransitService) Shape(routeId string) []ShapePath {
 	return all
 }
 
-func (serv TransitService) NearestStopForRoute(routeId string, lon string, lat string) Stop {
+func (serv TransitService) NearestStopForRoute(routeId string, directionId string, lon string, lat string) Stop {
 
 	longitude, _ := strconv.ParseFloat(strings.TrimSpace(lon), 64)
 	latitude, _ := strconv.ParseFloat(strings.TrimSpace(lat), 64)
 	latLongPoint := geo.NewPoint(latitude, longitude)
 
-	stopsForRoute := serv.StopsForRoute(routeId)
+	stopsForRoute := serv.StopsForRoute(routeId, directionId)
 
 	var nearest Stop
 	distance := math.MaxFloat64
@@ -590,19 +591,20 @@ func (serv TransitService) StopsInRange(lon string, lat string, distance string)
 	return some
 }
 
-func (serv TransitService) StopsForRoute(routeId string) []Stop {
+func (serv TransitService) StopsForRoute(routeId string, directionId string) []Stop {
 
 	services := serv.currentServiceList()
 
 	query := "select * from stop where stopid in " +
 		"(select distinct stopid from stoptime where tripid in " +
-		"(select distinct tripid from trip where routeid = :route and serviceid in (" + services + ")" +
+		"(select distinct tripid from trip where routeid = :route and directionid = :direction and serviceid in (" + services + ")" +
 		"))"
 
 	all := []Stop{}
 
 	_, err := dbMap.Select(&all, query, map[string]interface{}{
-		"route": routeId,
+		"route":     routeId,
+		"direction": directionId,
 	})
 
 	if err != nil {
