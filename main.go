@@ -385,6 +385,7 @@ type TransitService struct {
 	stopsInRange        gorest.EndPoint `method:"GET" path:"/stops/{lon:string}/{lat:string}/{distance:string}" output:"[]Stop"`
 	nearestStopForRoute gorest.EndPoint `method:"GET" path:"/stop/{routeId:string}/{directionId:string}/{lon:string}/{lat:string}" output:"Stop"`
 	shape               gorest.EndPoint `method:"GET" path:"/shape/{routeId:string}/{directionId:string}" output:"[]ShapePath"`
+	shapeById           gorest.EndPoint `method:"GET" path:"/shape/{shapeId:string}" output:"[]ShapePath"`
 	stopSchedule        gorest.EndPoint `method:"GET" path:"/schedule/{stopId:string}/{routeId:string}" output:"[]StopTime"`
 	tripSchedule        gorest.EndPoint `method:"GET" path:"/schedule/{tripId:string}" output:"[]StopTime"`
 	trip                gorest.EndPoint `method:"GET" path:"/trip/{tripId:string}" output:"[]Trip"`
@@ -495,6 +496,60 @@ func (serv TransitService) Shape(routeId string, directionId string) []ShapePath
 	_, err := dbMap.Select(&shapes, query, map[string]interface{}{
 		"route":     routeId,
 		"direction": directionId,
+	})
+	if err != nil {
+		serv.ResponseBuilder().SetResponseCode(404).WriteAndOveride([]byte(err.Error()))
+	}
+
+	var currentShape string
+	points := [][2]float64{}
+
+	for _, shape := range shapes {
+		if currentShape != shape.ShapeId {
+
+			if len(points) > 0 {
+				path := geo.NewPathFromXYData(points)
+
+				reducedPath := reducers.DouglasPeucker(path, 1.0e-5)
+				encodedString := reducedPath.Encode()
+				all = append(all, ShapePath{
+					ShapeId: currentShape,
+					Path:    encodedString,
+				})
+			}
+
+			points = [][2]float64{}
+			currentShape = shape.ShapeId
+		}
+
+		points = append(points, [2]float64{shape.ShapePtLon, shape.ShapePtLat})
+
+	}
+
+	// Make sure we're not missing the last shape
+	if len(points) > 0 {
+		path := geo.NewPathFromXYData(points)
+
+		reducedPath := reducers.DouglasPeucker(path, 1.0e-5)
+		encodedString := reducedPath.Encode()
+		all = append(all, ShapePath{
+			ShapeId: currentShape,
+			Path:    encodedString,
+		})
+	}
+
+	return all
+}
+
+func (serv TransitService) ShapeById(shapeId string) []ShapePath {
+	all := []ShapePath{}
+
+	query := "select * from shape where shapeid = :shapeId order by shapeid, shapeptsequence"
+
+	shapes := []Shape{}
+
+	_, err := dbMap.Select(&shapes, query, map[string]interface{}{
+		"shapeId": shapeId,
 	})
 	if err != nil {
 		serv.ResponseBuilder().SetResponseCode(404).WriteAndOveride([]byte(err.Error()))
