@@ -488,7 +488,7 @@ func (serv TransitService) Shape(routeId string, directionId string) []ShapePath
 
 	query := "select * from shape where shapeid in " +
 		"(select shapeid from trip where routeid = :route and directionid = :direction and serviceid in (" + services + ")) " +
-		"order by shapeid"
+		"order by shapeid, shapeptsequence"
 
 	shapes := []Shape{}
 
