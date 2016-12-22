@@ -197,7 +197,7 @@ func downloadDataset(url string, output string) {
 
 func load(artifactId string) {
 	// Download the most recent dataset
-	url := fmt.Sprintf("https://data.calgary.ca/_layouts/OpenData/DownloadDataset.ashx?Format=FILE&DatasetId=PDC0-99999-99999-00501-P(CITYonlineDefault)&VariantId=%s(CITYonlineDefault)", artifactId)
+	url := fmt.Sprintf("%s", artifactId)
 	downloadDataset(url, "/tmp/schedules.zip")
 	// delete any existing rows
 	err := dbMap.TruncateTables()
@@ -390,10 +390,10 @@ type TransitService struct {
 	tripSchedule        gorest.EndPoint `method:"GET" path:"/schedule/{tripId:string}" output:"[]StopTime"`
 	trip                gorest.EndPoint `method:"GET" path:"/trip/{tripId:string}" output:"[]Trip"`
 	trips               gorest.EndPoint `method:"GET" path:"/trips/{routeId:string}" output:"[]Trip"`
-	reload              gorest.EndPoint `method:"POST" path:"/admin/data/reload/{artifactId:string}" postdata:"string"`
+	reload              gorest.EndPoint `method:"POST" path:"/admin/data/reload" postdata:"string"`
 }
 
-func (serv TransitService) Reload(artifactId string, code string) {
+func (serv TransitService) Reload(artifactId string) {
 	log.Println(artifactId)
 	go load(artifactId)
 }
